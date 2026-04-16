@@ -1,0 +1,45 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# Capture files — too large for git
+*.pcap
+*.pcapng
+*.cap
+*.log
+*.gz
+*.zip
+*.tar
+*.tar.gz
+
+# Zeek output directories
+logs/
+zeek-logs/
+
+# mitmproxy state
+.mitmproxy/
+mitmproxy-ca*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Node (markdownlint, cspell run via npx — no install needed)
+node_modules/
+
+# Temporary / scratch
+tmp/
+scratch/
+*.tmp
+*.bak
