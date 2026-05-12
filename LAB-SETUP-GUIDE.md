@@ -580,7 +580,178 @@ Malcolm will process the PCAP through Zeek, Suricata, and Arkime and add it to t
 
 ---
 
-**Recommended:** Raspberry Pi 4 or mini PC running OpenWrt, or a hardware firewall (pfSense/OPNsense)
+### B.12 — Known-Good Traffic Filtering (BCN CMS + Schedule-Aware Analysis)
+
+#### B.12.1 — Why Filter CMS Traffic from PCAP Storage (But Never from Metadata)
+
+Content delivery from Doohlab BCN is the highest-volume traffic source — potentially 80%+ of total bytes. Storing full PCAP for it wastes storage without adding security value.
+
+**Rule: filter CMS traffic from PCAP payload storage only. Never filter it from Zeek logs or connection metadata.** The connection still appears in `conn.log`, `ssl.log`, and dashboards — only the raw packet bytes are not saved.
+
+Risks that only show up in CMS traffic metadata (reasons to keep watching it):
+
+- **Data piggybacking** — exfil payload embedded in a content sync request (upload bytes to CMS endpoint much larger than expected)
+- **DNS substitution** — device resolves `bcn.doohlab.com` but connects to a different IP than BCN's known CIDR
+- **TLS certificate mismatch** — cert subject in `ssl.log` does not match `*.doohlab.com`
+- **Out-of-schedule connections** — device contacts CMS at a time when no content is scheduled (see B.12.3)
+
+#### B.12.2 — Arkime PCAP Filter for Known-Good CMS Traffic
+
+First, resolve and document BCN's origin IP ranges. Update this list whenever BCN infrastructure changes:
+
+```bash
+# /etc/known-good-cidrs.conf
+# Doohlab BCN CMS — update with real IPs from DNS/NOC
+# dig +short bcn.doohlab.com
+# Check with your BCN account contact for full CDN/origin CIDR list
+BCN_CIDRS="203.0.113.0/24"    # placeholder — replace with real BCN CIDRs
+```
+
+Add the filter to Arkime's config so it skips PCAP storage for matching sessions
+while still indexing session metadata:
+
+```ini
+# /opt/malcolm/config/arkime.ini  (or arkime/config/config.ini in Malcolm)
+
+# Drop PCAP payload for known-good CMS traffic
+# Metadata (conn.log, ssl.log, session record) is still indexed — only bytes not stored
+dontSaveBPFs=dst net 203.0.113.0/24;1
+# Format: <BPF expression>;<sampleRate>
+# sampleRate 1 = drop 100% of matching session PCAPs
+# Add more semicolon-separated rules for additional known-good CIDRs:
+# dontSaveBPFs=dst net 203.0.113.0/24;1 or dst net 198.51.100.0/24;1
+```
+
+Restart Arkime capture after editing:
+
+```bash
+cd /opt/malcolm
+docker compose restart arkime
+```
+
+#### B.12.3 — Schedule-Aware Anomaly Detection
+
+Because content is scheduled in BCN UI, you have a ground-truth timetable of when the devices *should* be downloading content. Any CMS connection outside that window is suspicious.
+
+**Step 1 — Export the content schedule from BCN**
+
+Export or manually record the scheduled delivery windows for each device (or device group) as a simple CSV:
+
+```text
+# /etc/bcn-schedule.csv
+# device_mac, window_start (HH:MM UTC), window_end (HH:MM UTC), days (mon-fri / daily / etc)
+AA:BB:CC:DD:EE:01, 06:00, 08:00, daily
+AA:BB:CC:DD:EE:01, 14:00, 15:00, mon-fri
+AA:BB:CC:DD:EE:02, 07:00, 09:00, daily
+```
+
+**Step 2 — Cross-reference Zeek `conn.log` against the schedule**
+
+Run this after each capture day:
+
+```python
+#!/usr/bin/env python3
+# check-bcn-schedule.py — flag CMS connections outside scheduled windows
+import csv
+import sys
+from datetime import datetime, time
+
+BCN_CIDRS = ["203.0.113.0/24"]  # replace with real BCN CIDRs
+SCHEDULE_FILE = "/etc/bcn-schedule.csv"
+
+import ipaddress
+bcn_nets = [ipaddress.ip_network(c) for c in BCN_CIDRS]
+
+def is_bcn(ip):
+    try:
+        addr = ipaddress.ip_address(ip)
+        return any(addr in net for net in bcn_nets)
+    except ValueError:
+        return False
+
+def in_window(ts, start_str, end_str):
+    t = datetime.utcfromtimestamp(float(ts)).time()
+    s = time.fromisoformat(start_str)
+    e = time.fromisoformat(end_str)
+    return s <= t <= e
+
+# Load schedule: {mac: [(start, end, days), ...]}
+schedule = {}
+with open(SCHEDULE_FILE) as f:
+    for row in csv.reader(f):
+        if not row or row[0].startswith("#"):
+            continue
+        mac, start, end, days = [x.strip() for x in row]
+        schedule.setdefault(mac.lower(), []).append((start, end, days))
+
+# Read zeek conn.log from stdin (zeek-cut ts id.orig_h id.resp_h)
+# Usage: zeek-cut ts id.orig_h id.resp_h < conn.log | python3 check-bcn-schedule.py
+for line in sys.stdin:
+    parts = line.strip().split("\t")
+    if len(parts) < 3:
+        continue
+    ts, src, dst = parts[0], parts[1], parts[2]
+    if not is_bcn(dst):
+        continue
+    # Find device MAC from ARP/DHCP log or use IP as proxy
+    # For simplicity, match by source IP mapped to MAC via dnsmasq lease
+    matched_window = False
+    for mac, windows in schedule.items():
+        for start, end, days in windows:
+            if in_window(ts, start, end):
+                matched_window = True
+                break
+    if not matched_window:
+        dt = datetime.utcfromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S UTC")
+        print(f"[OUT-OF-SCHEDULE] {dt}  {src} → {dst}  (CMS contact outside any scheduled window)")
+```
+
+Run daily:
+
+```bash
+zeek-cut ts id.orig_h id.resp_h < /var/log/zeek/conn.log | \
+  python3 /opt/scripts/check-bcn-schedule.py >> /logs/schedule-anomalies.log
+```
+
+Any `[OUT-OF-SCHEDULE]` line is a 🟠 WARN finding — investigate whether it was a legitimate background sync (BCN may do health checks), an unscheduled firmware pull, or unexpected exfil.
+
+#### B.12.4 — CMS Traffic Integrity Checks (Always-On)
+
+These checks run against Zeek metadata regardless of PCAP filtering:
+
+```bash
+# 1. BCN destination IP is inside known CIDR (flag anything going elsewhere)
+zeek-cut id.resp_h < conn.log | sort -u | while read ip; do
+  python3 -c "
+import ipaddress, sys
+nets = [ipaddress.ip_network('203.0.113.0/24')]  # replace
+ip = ipaddress.ip_address('$ip')
+if not any(ip in n for n in nets):
+    print(f'[UNEXPECTED-CMS-IP] $ip')
+"
+done
+
+# 2. TLS cert subject matches BCN domain
+zeek-cut server_name certificate.subject < ssl.log | \
+  grep -v "doohlab.com" | \
+  grep -i "bcn\|cms\|content" | \
+  awk '{print "[CERT-MISMATCH]", $0}'
+
+# 3. Upload bytes to CMS endpoint above baseline (flag > 1 MB upload to CMS)
+zeek-cut id.resp_h orig_bytes < conn.log | awk -v threshold=1048576 '
+  $2 > threshold {print "[LARGE-UPLOAD-TO-CMS]", $1, $2, "bytes"}'
+```
+
+#### B.12.5 — Summary: What to Store and What to Skip
+
+| Traffic type | PCAP payload | Zeek metadata | Reason |
+|---|---|---|---|
+| BCN CMS (in-schedule) | ❌ skip | ✅ keep | Known-good source; metadata sufficient |
+| BCN CMS (out-of-schedule) | ✅ store | ✅ keep | Anomalous — full payload needed |
+| All other destinations | ✅ store | ✅ keep | Unknown — full capture required |
+| nftables / dnsmasq local | ❌ skip | ✅ keep | Management traffic, no exfil risk |
+
+---
 
 ### OpenWrt Setup
 
