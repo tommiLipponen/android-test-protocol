@@ -47,31 +47,35 @@ Two architecture options are described. **Option B (Linux gateway) is preferred*
                           [Simulated Internet]
 ```
 
-### Option B — Linux Gateway (preferred)
+### Option B — Linux Gateway + Malcolm (preferred)
 
 ```text
   [Device Under Test (DUT)]
           │  (Ethernet only)
           │
-  ┌───────┴──────────────────────────────────────────────────┐
-  │             LINUX GATEWAY HOST (2 NICs)                   │
-  │                                                            │
-  │   NIC 1: enp2s0  ←── DUT-facing (10.99.1.1/24)          │
-  │   NIC 2: enp3s0  ──→  WAN / uplink to internet           │
-  │                                                            │
-  │   Services running on this host:                          │
-  │   ├── dnsmasq          DHCP + DNS sinkhole                │
-  │   ├── nftables         NAT + full connection logging       │
-  │   ├── mitmproxy        Transparent HTTPS interception     │
-  │   ├── Zeek             Live protocol analysis             │
-  │   ├── tcpdump          Full PCAP capture (rotating)       │
-  │   └── Wireshark        On-demand deep inspection          │
-  └────────────────────────────────────────────────────────────┘
+  ┌───────┴──────────────────────────────────────────────────────────────┐
+  │                  LINUX GATEWAY HOST (2 NICs)                          │
+  │                                                                        │
+  │   NIC 1: enp2s0  ←── DUT-facing (10.99.1.1/24)                      │
+  │   NIC 2: enp3s0  ──→  WAN / uplink (4G router)                       │
+  │                                                                        │
+  │   ── Network infrastructure (Linux, always-on) ──                     │
+  │   ├── dnsmasq          DHCP + DNS logging                             │
+  │   ├── nftables         NAT + per-connection logging (monitor-only)    │
+  │   └── mitmproxy        Transparent HTTPS interception                 │
+  │                                                                        │
+  │   ── Analysis backend (Malcolm Docker stack) ──                       │
+  │   ├── Zeek             Live protocol analysis (conn/dns/ssl/http/...)  │
+  │   ├── Suricata         IDS signature alerts                           │
+  │   ├── Arkime           Full PCAP storage + browser-based session search│
+  │   ├── OpenSearch       Log indexing + anomaly detection (ML)          │
+  │   └── Dashboards       40+ prebuilt dashboards, alerting, GeoIP       │
+  └────────────────────────────────────────────────────────────────────────┘
           │
   [Internet] — full access, all traffic logged
 ```
 
-All device traffic is **forced through the Linux host** at L3 — no port mirroring hardware needed. Wireshark and Zeek operate on the internal NIC directly.
+All device traffic is **forced through the Linux host** at L3. Malcolm runs as Docker containers on the same host and listens on `enp2s0` — no separate analysis machine needed. The infrastructure layer (`dnsmasq`, `nftables`, `mitmproxy`) runs on the host OS alongside the Docker stack.
 
 ---
 
@@ -459,11 +463,122 @@ adb shell getevent | grep -i usb
 | L5/L6 — Session/Presentation | mitmproxy, Zeek `ssl.log` | TLS cert inspection, cipher suites, certificate pinning |
 | L7 — Application | mitmproxy, Zeek `dns.log` `http.log` | DNS queries, HTTP payloads, user-agents, API calls, uploaded data |
 
+| L2 — Data Link | Wireshark / tcpdump on `enp2s0` | ARP, MAC addresses, broadcast storms |
+| L3 — Network | nftables logs, Zeek `conn.log` | IP geolocation, ASN, ICMP, routing anomalies |
+| L4 — Transport | Zeek `conn.log`, nftables | TCP/UDP ports, connection state, beaconing intervals |
+| L5/L6 — Session/Presentation | mitmproxy, Zeek `ssl.log` | TLS cert inspection, cipher suites, certificate pinning |
+| L7 — Application | mitmproxy, Zeek `dns.log` `http.log` | DNS queries, HTTP payloads, user-agents, API calls, uploaded data |
+
 All layers are visible **before NAT** on `enp2s0` — this is the key advantage of the Linux gateway over router-only logging.
 
 ---
 
-## 1. Test Router / Firewall (Option A)
+### B.10 — Malcolm: Integrated Analysis Backend
+
+[Malcolm](https://github.com/cisagov/Malcolm) (CISA / Idaho National Lab, Apache 2.0) replaces the manually assembled Zeek + tcpdump + Elasticsearch + Kibana stack with a single pre-wired Docker Compose deployment. It adds Suricata IDS, Arkime full-PCAP browser, OpenSearch anomaly detection, DGA/entropy detection, YARA file scanning, threat intel feed integration, and 40+ prebuilt dashboards — all configured out of the box.
+
+**What Malcolm replaces from the individual-component plan:**
+
+| Individual component | Malcolm equivalent |
+|---|---|
+| `tcpdump` rotating PCAP | Arkime capture (PCAP stored + indexed) |
+| Zeek (manual) | Zeek (pre-configured, 30+ protocol parsers) |
+| ❌ none | Suricata IDS — signature-based alerts |
+| Kibana (manual dashboards) | OpenSearch Dashboards — 40+ prebuilt dashboards |
+| Manual log parsing | Logstash + Filebeat pipelines, all pre-wired |
+| ❌ none | JA4+ TLS fingerprinting (via Zeek plugin) |
+| ❌ none | freq server — entropy/DGA detection on DNS queries |
+| ❌ none | MISP/TAXII threat intel auto-correlation |
+| ❌ none | Strelka file scanner (YARA + Capa + ClamAV) |
+| Manual GeoIP | MaxMind GeoLite2 built-in |
+
+**What Malcolm does NOT replace (keep running on the host OS):**
+
+- `dnsmasq` — DHCP server and DNS logger for the DUT subnet
+- `nftables` — NAT and per-connection kernel-level logging
+- `mitmproxy` — transparent TLS interception (Malcolm sees metadata only; mitmproxy sees plaintext)
+
+#### B.10.1 — Hardware Requirements
+
+Malcolm is heavier than individual tools. Minimum for a single-device lab:
+
+| Resource | Minimum | Recommended |
+|---|---|---|
+| RAM | 16 GB | 32 GB |
+| CPU | 4 cores | 8 cores |
+| Storage | 250 GB SSD | 500 GB+ SSD |
+| OS | Ubuntu 22.04/24.04, Debian 12 | same |
+
+#### B.10.2 — Installation
+
+```bash
+# Install Docker
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Clone Malcolm
+git clone --depth 1 https://github.com/cisagov/Malcolm.git
+cd Malcolm
+
+# Run the interactive setup wizard
+# Accept defaults where unsure; key choices:
+#   - capture interface: enp2s0
+#   - live capture: yes
+#   - Suricata: yes
+#   - mitmproxy integration: no (mitmproxy runs separately on host)
+python3 scripts/install.py
+
+# Pull container images (~10–15 GB, takes time on first run)
+docker compose pull
+
+# Start Malcolm
+docker compose up -d
+```
+
+Malcolm's web UI is available at `https://localhost` after startup (self-signed cert, accept the warning).
+Default credentials are set during `install.py`.
+
+#### B.10.3 — Point Malcolm at the DUT Interface
+
+During `install.py` or by editing `malcolm-environment.env`:
+
+```bash
+# In malcolm-environment.env:
+PCAP_IFACE=enp2s0          # capture on DUT-facing NIC
+ZEEK_LIVE_CAPTURE=true
+SURICATA_LIVE_CAPTURE=true
+```
+
+Malcolm's Zeek and Suricata containers will attach directly to `enp2s0` and begin capturing. No tcpdump wrapper needed — Arkime stores and indexes the raw PCAP automatically.
+
+#### B.10.4 — Key Dashboards for This Use Case
+
+Once Malcolm is running, open the OpenSearch Dashboards interface (linked from the main Malcolm UI) and look at:
+
+| Dashboard | What to watch |
+|---|---|
+| **Connections** | Destination IPs, countries, ASNs — filter by `enp2s0` source |
+| **DNS** | All queried domains, especially those not matching known CDN patterns |
+| **TLS** | Certificate subjects, issuers, JA4+ fingerprints, expired/self-signed certs |
+| **Suricata Alerts** | Any signature hits — even low-severity ones are worth noting |
+| **File Transfers** | Zeek-extracted files scanned by Strelka/YARA |
+| **Connections by Country** | GeoIP map — flag any Chinese ASN traffic |
+
+#### B.10.5 — Uploading Offline PCAPs
+
+If you capture a PCAP elsewhere (e.g., at the office with tcpdump), upload it to Malcolm for indexing:
+
+```bash
+# Via the Malcolm web UI → Upload PCAP / Zeek logs
+# Or via the upload container directly:
+curl -u analyst:password -F "filedata=@/path/to/capture.pcap" \
+  https://localhost/upload
+```
+
+Malcolm will process the PCAP through Zeek, Suricata, and Arkime and add it to the searchable index — making it possible to correlate office captures with home lab captures in one interface.
+
+---
 
 **Recommended:** Raspberry Pi 4 or mini PC running OpenWrt, or a hardware firewall (pfSense/OPNsense)
 

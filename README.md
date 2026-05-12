@@ -44,14 +44,25 @@ A structured security evaluation protocol for Chinese-manufactured, rooted Andro
   [DUT] ──Ethernet──▶ enp2s0 [LINUX GATEWAY] enp3s0 ──Ethernet──▶ [4G ROUTER] ──▶ Internet
 ```
 
-All device traffic passes through the Linux gateway. Tools used:
+The Linux gateway runs two layers of tooling:
 
-- **Zeek** — live protocol analysis and connection summaries
-- **tcpdump** — rotating full PCAP capture
-- **mitmproxy** — transparent HTTPS interception (where TLS can be intercepted)
-- **dnsmasq** — DHCP server + DNS logging
+**Network infrastructure (host OS):**
+
 - **nftables** — NAT + per-connection logging (monitor-only, policy accept)
-- **Wireshark** — on-demand deep packet inspection
+- **dnsmasq** — DHCP server + DNS query logging
+- **mitmproxy** — transparent HTTPS interception (TLS plaintext visible on rooted devices)
+
+**Analysis backend ([Malcolm](https://github.com/cisagov/Malcolm) — Docker Compose, CISA/INL):**
+
+- **Zeek** — live protocol analysis (conn, dns, ssl, http, files, weird logs)
+- **Suricata** — IDS signature alerts
+- **Arkime** — full PCAP storage + browser-based session search
+- **OpenSearch + Dashboards** — log indexing, 40+ prebuilt dashboards, GeoIP, anomaly detection
+- **Strelka** — YARA/Capa/ClamAV file scanning on Zeek-extracted files
+- **JA4+** — TLS client fingerprinting via Zeek plugin
+- **freq server** — entropy/DGA detection on DNS queries
+
+Malcolm replaces manually wiring Zeek → Logstash → Elasticsearch → Kibana. It ships pre-configured with threat intel feed support (MISP/TAXII) and MaxMind GeoLite2 built in.
 
 ---
 
@@ -71,14 +82,16 @@ All device traffic passes through the Linux gateway. Tools used:
 
 ### Linux Gateway Host
 
-- Ubuntu 24.04 LTS or Debian 12
+- Ubuntu 22.04/24.04 LTS or Debian 12
 - Two NICs: `enp2s0` (DUT-facing, 10.99.1.1/24) and `enp3s0` (WAN)
-- Packages: `nftables`, `dnsmasq`, `tcpdump`, `mitmproxy`, `zeek`, `wireshark`
+- **16 GB RAM minimum, 32 GB recommended** (Malcolm Docker stack)
+- **250 GB+ SSD** for PCAP and log storage
+- Host OS packages: `nftables`, `dnsmasq`, `mitmproxy`, `docker`
+- Malcolm handles Zeek, Suricata, Arkime, and OpenSearch via Docker Compose
 
 ### Analyst Workstation
 
-- Wireshark, `tshark`, `zeek-cut`
-- Python 3 (for annotation scripts and log parsing)
+- Browser access to Malcolm UI at `https://<gateway-ip>` (OpenSearch Dashboards + Arkime)
 - `adb`, `apktool`, `jadx`, `MobSF` (optional, for static analysis phases)
 
 ---
