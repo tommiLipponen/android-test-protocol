@@ -69,6 +69,7 @@ gantt
 flowchart TD
     subgraph OFFICE["🏢 Corporate Office (Showroom)"]
         DUT_O["DUT fleet\n(signage devices)"] -->|Ethernet| SW["Switch / LAN"]
+        SW --> HH["Hedgehog Linux\nmini PC sensor"]
         SW --> FW["Corporate Firewall\n(logs + VLAN isolation)"]
         FW --> INET_O["Internet"]
     end
@@ -84,6 +85,7 @@ flowchart TD
         R4G --> INET_H["Internet"]
     end
 
+    HH -->|Zeek logs + PCAP\nSSH tunnel / Logstash mTLS| MALCOLM
     INET_O -.->|same internet targets| INET_H
 ```
 

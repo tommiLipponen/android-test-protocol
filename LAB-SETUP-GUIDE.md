@@ -31,6 +31,49 @@ The corporate firewall at the office site is a significant asset. Coordinate wit
 
 ---
 
+## Hedgehog Linux — Remote Sensor at the Office Site
+
+[Hedgehog Linux](https://github.com/cisagov/Malcolm/tree/main/hedgehog) is a companion project to Malcolm, also from CISA/INL (Apache 2.0). It is a purpose-built, hardened Linux sensor OS designed to run on a small dedicated machine (e.g. a mini PC) at a remote site — in this case the corporate showroom. Hedgehog captures traffic and ships it back to your Malcolm instance at the home lab, giving you unified analysis across both sites in one OpenSearch/Arkime interface.
+
+**Why this matters for this project:**
+
+- The corporate firewall already provides independent log evidence. Hedgehog adds full PCAP depth and Zeek metadata from the office network without requiring a second Malcolm installation.
+- Hedgehog is deliberately minimal — no GUI, no unnecessary services. It boots straight into capture mode.
+- Traffic forwarding between Hedgehog and Malcolm is authenticated and optionally encrypted (SSH tunnel or Logstash mutual TLS).
+
+### Office site architecture with Hedgehog
+
+```mermaid
+flowchart TD
+    subgraph OFFICE["🏢 Corporate Office (Showroom)"]
+        DUT_O["DUT fleet\n(signage devices)"] -->|Ethernet| SW["Switch / VLAN"]
+        SW --> HH["Hedgehog Linux\nmini PC sensor"]
+        SW --> FW["Corporate Firewall\n(logs + VLAN isolation)"]
+        FW --> INET_O["Internet"]
+    end
+
+    HH -->|Zeek logs + PCAP\nSSH tunnel / Logstash mTLS| MALCOLM
+
+    subgraph HOMELAB["🏠 Home Lab"]
+        MALCOLM["Malcolm\n(OpenSearch · Arkime · Dashboards)"]
+    end
+```
+
+### Hedgehog setup outline
+
+1. **Download the Hedgehog ISO** from the [Malcolm releases page](https://github.com/cisagov/Malcolm/releases) — look for `hedgehog-*.iso`.
+2. **Write to USB** and boot the mini PC from it. The installer asks for:
+   - Capture interface (NIC facing the showroom switch mirror port)
+   - Malcolm server IP/hostname and credentials
+   - Forwarding method (Logstash over mTLS is the default; SSH reverse tunnel is also supported)
+3. **On the switch**, configure a mirror/SPAN port that sends a copy of all traffic from the signage device ports to the Hedgehog capture NIC.
+4. **On Malcolm** (home lab), run `./scripts/auth_setup` and create a Hedgehog sensor credential. Restart Malcolm services after.
+5. Within a few minutes, Hedgehog sessions appear in the Malcolm Arkime interface tagged with the sensor hostname, distinguishable from the home lab captures.
+
+> Hedgehog does **not** require a second NIC for WAN access — it only needs its capture NIC (mirror port) and a management/uplink NIC to reach Malcolm over the internet (via the corporate firewall outbound). Ensure the corporate firewall allows outbound TCP 5044 (Logstash) or whichever forwarding port you configure.
+
+---
+
 ## Architecture Overview
 
 Two architecture options are described. **Option B (Linux gateway) is preferred** — it eliminates the need for a managed switch with port mirroring and consolidates all analysis tools on one host.
