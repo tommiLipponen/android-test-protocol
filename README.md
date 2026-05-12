@@ -27,6 +27,31 @@ A structured security evaluation protocol for Chinese-manufactured, rooted Andro
 
 ## Test Phases Summary
 
+```mermaid
+gantt
+    title Security Test Protocol — 3-Month Timeline
+    dateFormat  YYYY-MM-DD
+    axisFormat  Week %W
+
+    section Phase 1
+    Baseline & Inventory          :p1, 2026-05-12, 14d
+
+    section Phase 2
+    Network Behaviour Capture     :p2, after p1, 14d
+
+    section Phase 3
+    Static Analysis (APK/firmware):p3, after p1, 21d
+
+    section Phase 4
+    Dynamic Analysis & mitmproxy  :p4, after p2, 14d
+
+    section Phase 5
+    Long-term Monitoring          :p5, after p4, 42d
+
+    section Phase 6
+    Reporting & Risk Matrix       :p6, after p5, 14d
+```
+
 | Phase | Duration | Focus |
 |-------|----------|-------|
 | 1 — Baseline & Inventory | Week 1–2 | Physical inspection, firmware fingerprint, ADB enumeration |
@@ -40,8 +65,26 @@ A structured security evaluation protocol for Chinese-manufactured, rooted Andro
 
 ## Lab Architecture
 
-```text
-  [DUT] ──Ethernet──▶ enp2s0 [LINUX GATEWAY] enp3s0 ──Ethernet──▶ [4G ROUTER] ──▶ Internet
+```mermaid
+flowchart TD
+    subgraph OFFICE["🏢 Corporate Office (Showroom)"]
+        DUT_O["DUT fleet\n(signage devices)"] -->|Ethernet| SW["Switch / LAN"]
+        SW --> FW["Corporate Firewall\n(logs + VLAN isolation)"]
+        FW --> INET_O["Internet"]
+    end
+
+    subgraph HOMELAB["🏠 Home Lab (Deep Analysis)"]
+        DUT_H["DUT\n(signage device)"] -->|enp2s0| GW
+        subgraph GW["Linux Gateway Host"]
+            direction TB
+            INFRA["Host OS\ndnsmasq · nftables · mitmproxy"]
+            MALCOLM["Malcolm Docker Stack\nZeek · Suricata · Arkime · OpenSearch"]
+        end
+        GW -->|enp3s0| R4G["4G Router"]
+        R4G --> INET_H["Internet"]
+    end
+
+    INET_O -.->|same internet targets| INET_H
 ```
 
 The Linux gateway runs two layers of tooling:

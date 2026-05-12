@@ -77,6 +77,29 @@ Two architecture options are described. **Option B (Linux gateway) is preferred*
 
 All device traffic is **forced through the Linux host** at L3. Malcolm runs as Docker containers on the same host and listens on `enp2s0` — no separate analysis machine needed. The infrastructure layer (`dnsmasq`, `nftables`, `mitmproxy`) runs on the host OS alongside the Docker stack.
 
+```mermaid
+flowchart LR
+    DUT["DUT\n(signage device)"] -->|Ethernet| NIC1["enp2s0\n10.99.1.1"]
+
+    subgraph GW["Linux Gateway Host"]
+        direction TB
+        NIC1 --> NFTABLES["nftables\nNAT + connection log"]
+        NIC1 --> DNSMASQ["dnsmasq\nDHCP + DNS log"]
+        NIC1 --> MITM["mitmproxy\nTLS intercept"]
+        NIC1 --> MALCOLM
+        subgraph MALCOLM["Malcolm  (Docker)"]
+            direction LR
+            ZEEK["Zeek"] --> OS["OpenSearch"]
+            SURICATA["Suricata"] --> OS
+            ARKIME["Arkime"] --> OS
+            OS --> DASH["Dashboards"]
+        end
+    end
+
+    GW -->|enp3s0| R4G["4G Router"]
+    R4G --> INET["Internet"]
+```
+
 ---
 
 ## Option B — Linux Gateway Setup (Preferred)
@@ -463,13 +486,22 @@ adb shell getevent | grep -i usb
 | L5/L6 — Session/Presentation | mitmproxy, Zeek `ssl.log` | TLS cert inspection, cipher suites, certificate pinning |
 | L7 — Application | mitmproxy, Zeek `dns.log` `http.log` | DNS queries, HTTP payloads, user-agents, API calls, uploaded data |
 
-| L2 — Data Link | Wireshark / tcpdump on `enp2s0` | ARP, MAC addresses, broadcast storms |
-| L3 — Network | nftables logs, Zeek `conn.log` | IP geolocation, ASN, ICMP, routing anomalies |
-| L4 — Transport | Zeek `conn.log`, nftables | TCP/UDP ports, connection state, beaconing intervals |
-| L5/L6 — Session/Presentation | mitmproxy, Zeek `ssl.log` | TLS cert inspection, cipher suites, certificate pinning |
-| L7 — Application | mitmproxy, Zeek `dns.log` `http.log` | DNS queries, HTTP payloads, user-agents, API calls, uploaded data |
-
 All layers are visible **before NAT** on `enp2s0` — this is the key advantage of the Linux gateway over router-only logging.
+
+```mermaid
+flowchart TD
+    PCAP["Raw packet arrives on enp2s0"]
+    PCAP --> L2["L2 — Wireshark / tcpdump\nARP, MAC, broadcasts"]
+    PCAP --> L3["L3 — nftables + Zeek conn.log\nIP, ASN, GeoIP, ICMP"]
+    PCAP --> L4["L4 — Zeek conn.log\nTCP/UDP ports, beaconing intervals"]
+    PCAP --> L56["L5/L6 — mitmproxy + Zeek ssl.log\nTLS cert, cipher suite, JA4+ fingerprint"]
+    PCAP --> L7["L7 — mitmproxy + Zeek dns/http/files\nDNS queries, HTTP payloads, user-agents"]
+
+    L3 --> ALERT["OpenSearch Anomaly Detection\n+ Suricata IDS alerts"]
+    L56 --> ALERT
+    L7 --> ALERT
+    ALERT --> DASH["OpenSearch Dashboards\n+ Arkime session search"]
+```
 
 ---
 
@@ -508,6 +540,30 @@ Malcolm is heavier than individual tools. Minimum for a single-device lab:
 | CPU | 4 cores | 8 cores |
 | Storage | 250 GB SSD | 500 GB+ SSD |
 | OS | Ubuntu 22.04/24.04, Debian 12 | same |
+
+**Storage tiering** — PCAP and index data grows quickly. A three-tier approach keeps costs manageable:
+
+```mermaid
+flowchart LR
+    RAW["Raw PCAP\ncaptured on enp2s0"]
+    RAW --> HOT
+
+    subgraph HOT["HOT — SSD (250 GB)"]
+        H1["Uncompressed PCAP\nArkime full-text index\nLast 7 days"]
+    end
+
+    HOT -->|day 7: compress + move| WARM
+
+    subgraph WARM["WARM — RAID (4 TB)"]
+        W1["zstd-compressed PCAP\nDays 7 –60"]
+    end
+
+    WARM -->|day 60: archive| COLD
+
+    subgraph COLD["COLD — Azure Blob Archive"]
+        C1["€0.002 / GB / month\n90-day minimum retention\nazcopy / rclone restore"]
+    end
+```
 
 #### B.10.2 — Installation
 
@@ -745,11 +801,30 @@ zeek-cut id.resp_h orig_bytes < conn.log | awk -v threshold=1048576 '
 #### B.12.5 — Summary: What to Store and What to Skip
 
 | Traffic type | PCAP payload | Zeek metadata | Reason |
-|---|---|---|---|
+|---|---|---|---------|
 | BCN CMS (in-schedule) | ❌ skip | ✅ keep | Known-good source; metadata sufficient |
 | BCN CMS (out-of-schedule) | ✅ store | ✅ keep | Anomalous — full payload needed |
 | All other destinations | ✅ store | ✅ keep | Unknown — full capture required |
 | nftables / dnsmasq local | ❌ skip | ✅ keep | Management traffic, no exfil risk |
+
+```mermaid
+flowchart TD
+    PKT["Outbound packet from DUT"]
+    PKT --> Q1{"Destination IP\nin BCN CMS CIDR?"}
+
+    Q1 -->|No| STORE_ALL["Store full PCAP\n+ Zeek metadata\n🟠 Investigate all"]
+
+    Q1 -->|Yes| Q2{"Timestamp within\nscheduled window?"}
+
+    Q2 -->|Yes| Q3{"Cert subject\nmatches doohlab.com?"}
+    Q2 -->|No| WARN["OUT-OF-SCHEDULE\n🟠 WARN\nStore full PCAP"]    
+
+    Q3 -->|Yes| Q4{"Upload bytes\n> baseline?"}
+    Q3 -->|No| CERT_WARN["CERT MISMATCH\n🔴 CRITICAL\nStore full PCAP"]
+
+    Q4 -->|No| SKIP["Skip PCAP payload\n✅ Keep Zeek metadata only\nArkime dontSaveBPFs"]
+    Q4 -->|Yes| VOL_WARN["LARGE UPLOAD\n🟠 WARN\nStore full PCAP"]
+```
 
 ---
 
