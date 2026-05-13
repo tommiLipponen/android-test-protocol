@@ -76,43 +76,46 @@ This protocol establishes a systematic, reproducible process for security-valida
 | Item | Purpose |
 |---|---|
 | Dedicated test VLAN / physical switch | Total isolation from production and internet |
-| Transparent proxy server (e.g., mitmproxy, Squid with SSL bump) | Decrypt and inspect HTTPS traffic |
+| Linux gateway host (2 NICs) | NAT, nftables connection logging, dnsmasq DHCP/DNS, Malcolm capture |
 | Network TAP or managed switch with port mirroring | Passive full packet capture without altering device behavior |
-| Packet capture workstation (Wireshark / tcpdump / Zeek) | Long-term PCAP storage and analysis |
-| DNS sinkhole (Pi-hole or BIND RPZ) | Log all DNS queries, block unwanted domains |
+| Malcolm (CISA/INL Docker Compose stack) | Full PCAP (Arkime), Zeek logs, Suricata IDS, OpenSearch Dashboards — see LAB-SETUP-GUIDE.md |
+| dnsmasq on gateway host | Log all DNS queries from DUT; serves DHCP static lease |
 | NTP server (local) | Ensure accurate timestamps across all logs |
-| SIEM or log aggregator (ELK / Graylog / Splunk) | Correlation, alerting, long-term storage |
 | ADB workstation (Linux preferred) | Static analysis, package enumeration |
 | Second clean Android device (reference) | Baseline comparison for traffic |
-| Dedicated router with full NAT logging | Track all outbound connection attempts |
 
 ### 3.2 Network Topology for Testing
 
 ```text
 [Device Under Test]
        |
-  [Managed Switch / Mirror Port]
-       |          |
-  [TAP Sensor]  [Test Router / Firewall]
-       |          |
-  [Packet Capture]  [DNS Sinkhole]
-                    [Transparent Proxy]
-                    |
-              [Simulated Internet] ← controlled egress, all traffic logged
-                    |
-              [REAL Internet] ← allowed only after explicit decision per domain
+   enp2s0 (DUT-facing, 10.99.1.1/24)
+       |
+  [Linux Gateway Host]
+   ├── nftables (NAT + per-connection logging)
+   ├── dnsmasq (DHCP static lease + DNS query log)
+   └── Malcolm Docker stack
+       ├── Zeek (protocol analysis)
+       ├── Suricata (IDS alerts)
+       ├── Arkime (full PCAP storage + search)
+       └── OpenSearch Dashboards (http://localhost:5601)
+       |
+   enp3s0 (WAN uplink)
+       |
+  [4G Router / Internet]
+       |
+  [REAL Internet] ← all traffic logged before egress
 ```
 
 ### 3.3 Baseline Setup Steps
 
-- [ ] Flash test router to known-good firmware (OpenWrt recommended)
-- [ ] Configure DNS sinkhole — log ALL queries, initially allow all resolution
-- [ ] Configure transparent proxy with self-signed CA — install CA on device if possible
-- [ ] Configure port mirror to packet capture workstation
+- [ ] Set up Linux gateway per LAB-SETUP-GUIDE.md (nftables NAT, dnsmasq, Malcolm)
+- [ ] Configure dnsmasq — static lease for DUT MAC, log all DNS queries
+- [ ] Start Malcolm stack (`cd /opt/malcolm && docker compose up -d`) — verify dashboards at :5601
 - [ ] Set up NTP — all systems synchronized
-- [ ] Set up log rotation — minimum 90-day retention
+- [ ] Configure Malcolm storage retention (hot SSD 7 days → warm RAID 60 days)
 - [ ] Assign device a static DHCP lease — log by MAC address
-- [ ] Document test VLAN subnet, gateway, DNS server IPs clearly
+- [ ] Document test VLAN subnet, gateway IP (10.99.1.1), DNS server IP clearly
 - [ ] Verify no path exists from test VLAN to production LAN
 
 ### 3.4 Device Identification & Baseline Documentation
@@ -276,17 +279,20 @@ ls etc/security/cacerts/
 
 ### 5.2 Traffic Collection Configuration
 
-On capture workstation:
+Malcolm handles capture automatically once running. Verify it is active:
 
 ```bash
-# Continuous packet capture, rotate every hour
-tcpdump -i eth0 -w /captures/device-%Y%m%d-%H%M.pcap -G 3600 -Z root
+# Confirm Malcolm containers are up
+cd /opt/malcolm && docker compose ps
 
-# Zeek for protocol analysis
-zeek -i eth0 local
+# Confirm Zeek is writing logs
+ls -lh /opt/malcolm/zeek-logs/current/
 
-# DNS log analysis (Pi-hole)
-tail -f /var/log/pihole.log | grep <device_IP>
+# Live DNS query log (dnsmasq on host)
+journalctl -u dnsmasq -f | grep <device_IP>
+
+# Open Arkime PCAP browser
+# http://localhost:8005  (or Malcolm dashboard → Arkime Sessions)
 ```
 
 ### 5.3 Daily Checks (Days 1–14)
@@ -295,15 +301,15 @@ Each day, review and record:
 
 | Check | Tool | Expected Result |
 |---|---|---|
-| Unique external IPs contacted | `zeek conn.log` / Wireshark | Only approved IPs |
-| Unique external domains resolved | DNS sinkhole log | Only approved domains |
-| Total outbound data volume (bytes) | `zeek conn.log` | Document baseline |
-| Any connections on non-standard ports | `zeek conn.log` filter | None unexpected |
-| TLS certificate inspection | mitmproxy log | No certificate pinning bypass needed |
-| Any UDP beaconing | Wireshark filter `udp && ip.dst != <LAN>` | Document all |
-| ICMP to external hosts | Wireshark | None expected |
-| mDNS / SSDP / LLMNR broadcasts | Wireshark | Document scope |
-| ARP anomalies | Wireshark / arpwatch | No unexpected ARP |
+| Unique external IPs contacted | Malcolm — Connections by Country / Zeek `conn.log` | Only approved IPs |
+| Unique external domains resolved | Malcolm — DNS dashboard / dnsmasq log | Only approved domains |
+| Total outbound data volume (bytes) | Malcolm — Zeek `conn.log` (orig_bytes field) | Document baseline |
+| Any connections on non-standard ports | Malcolm — Zeek `conn.log` filter by resp_p | None unexpected |
+| TLS certificate inspection | Malcolm — Zeek `ssl.log` + JA4+ dashboard | Document all cert subjects/issuers |
+| Any UDP beaconing | Malcolm — Zeek `conn.log` proto=udp filter | Document all |
+| ICMP to external hosts | Malcolm — Zeek `conn.log` proto=icmp | None expected |
+| mDNS / SSDP / LLMNR broadcasts | Malcolm — Arkime session filter | Document scope |
+| ARP anomalies | Malcolm — Zeek `arp.log` | No unexpected ARP |
 
 ### 5.4 Identifying "Calling Home" Behavior
 
@@ -724,19 +730,20 @@ DENY ALL (default deny, log all hits)
 
 | Tool | Purpose | Install |
 |---|---|---|
-| Wireshark | Packet analysis | wireshark.org |
-| tcpdump | CLI packet capture | Linux package |
-| Zeek | Network visibility platform | zeek.org |
-| mitmproxy | HTTPS interception | mitmproxy.org |
-| Pi-hole | DNS sinkhole | pi-hole.net |
+| Malcolm (CISA/INL) | All-in-one: Zeek + Suricata + Arkime PCAP + OpenSearch Dashboards | github.com/cisagov/Malcolm |
+| Zeek | Network visibility (built into Malcolm) | via Malcolm |
+| Arkime | Full PCAP storage + search (built into Malcolm) | via Malcolm |
+| Suricata | IDS signature alerts (built into Malcolm) | via Malcolm |
+| MaxMind GeoLite2 | IP geolocation (built into Malcolm) | via Malcolm |
+| dnsmasq | DHCP server + DNS query logging (host OS) | Linux package |
+| nftables | NAT + per-connection kernel logging (host OS) | Linux package |
+| Wireshark | Supplemental ad-hoc packet analysis | wireshark.org |
 | nmap | Port scanning | nmap.org |
 | apktool | APK decompilation | apktool.ibotpeaches.me |
 | jadx | APK decompile to Java | github.com/skylot/jadx |
 | MobSF | Automated mobile app analysis | mobsf.github.io (Docker) |
 | ADB | Android debug bridge | Android SDK Platform Tools |
 | binwalk | Firmware analysis | github.com/ReFirmLabs/binwalk |
-| MaxMind GeoLite2 | Offline IP geolocation | maxmind.com |
-| ELK Stack | Log aggregation / SIEM | elastic.co |
 
 ### Appendix E — Relevant Standards & References
 
