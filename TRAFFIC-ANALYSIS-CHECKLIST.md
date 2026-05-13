@@ -18,7 +18,7 @@
 
 ### DNS Layer
 
-- [ ] Are all DNS queries going to the configured sinkhole/resolver only?
+- [ ] Are all DNS queries going to the configured resolver only (dnsmasq at 10.99.1.1)?
   - Any queries to other IPs: 🟠 DNS hijacking or hardcoded resolver
 - [ ] Any DNS query with subdomain length > 100 characters?
   - Yes: 🔴 Possible DNS tunneling
@@ -121,14 +121,24 @@ diff ports_LASTWEEK.txt ports_$(date +%Y%m%d).txt
 
 ### Capturing a Specific Connection for Analysis
 
+**Primary — Arkime (Malcolm):**
+
+```text
+# Open http://localhost:8005 (Arkime Sessions)
+# Filter by source IP:  ip.src == <device_ip>
+# Filter by dest IP:    ip.dst == <suspicious_ip>
+# Right-click session → View Packets (full PCAP reassembly)
+# Right-click session → Download PCAP (export for offline analysis)
+```
+
+**Supplemental — Wireshark (on exported PCAP):**
+
 ```bash
-# In Wireshark: filter to device IP
+# Filter to device IP
 ip.addr == <device_ip>
 
 # Filter to specific destination
 ip.addr == <device_ip> && ip.dst == <suspicious_ip>
-
-# Extract HTTP/HTTPS stream: Right-click → Follow → TLS Stream (if decrypted by proxy)
 
 # Export objects: File → Export Objects → HTTP
 ```
