@@ -19,7 +19,7 @@ A structured security evaluation protocol for Chinese-manufactured, rooted Andro
 | File | Purpose |
 |------|---------|
 | [TEST-PROTOCOL.md](TEST-PROTOCOL.md) | Main 6-phase test protocol — threat model, test procedures, risk matrix, appendices |
-| [LAB-SETUP-GUIDE.md](LAB-SETUP-GUIDE.md) | Step-by-step Linux gateway setup (nftables, mitmproxy, Zeek, tcpdump, dnsmasq) |
+| [LAB-SETUP-GUIDE.md](LAB-SETUP-GUIDE.md) | Step-by-step Linux gateway setup (nftables, dnsmasq, Malcolm) |
 | [TRAFFIC-ANALYSIS-CHECKLIST.md](TRAFFIC-ANALYSIS-CHECKLIST.md) | Daily/weekly analyst checklist with severity codes |
 | [DEVICE-TEST-LOG-TEMPLATE.md](DEVICE-TEST-LOG-TEMPLATE.md) | Per-device tracking log — copy one per device under test |
 
@@ -43,7 +43,7 @@ gantt
     Static Analysis (APK/firmware):p3, after p1, 21d
 
     section Phase 4
-    Dynamic Analysis & mitmproxy  :p4, after p2, 14d
+    Dynamic Analysis              :p4, after p2, 14d
 
     section Phase 5
     Long-term Monitoring          :p5, after p4, 42d
@@ -57,7 +57,7 @@ gantt
 | 1 — Baseline & Inventory | Week 1–2 | Physical inspection, firmware fingerprint, ADB enumeration |
 | 2 — Network Behaviour | Week 2–4 | Traffic capture, DNS analysis, TLS certificate inspection |
 | 3 — Static Analysis | Week 3–5 | APK decompilation, pre-installed app review, permission audit |
-| 4 — Dynamic Analysis | Week 4–6 | Live traffic correlation, mitmproxy interception, Zeek alerts |
+| 4 — Dynamic Analysis | Week 4–6 | Live traffic correlation, Malcolm dashboards, Arkime session drill-down |
 | 5 — Long-term Monitoring | Month 2–3 | Scheduled/overnight captures, job scheduler inspection, OTA watch |
 | 6 — Reporting | Month 3 | Risk matrix, findings, recommendations |
 
@@ -78,7 +78,7 @@ flowchart TD
         DUT_H["DUT\n(signage device)"] -->|enp2s0| GW
         subgraph GW["Linux Gateway Host"]
             direction TB
-            INFRA["Host OS\ndnsmasq · nftables · mitmproxy"]
+            INFRA["Host OS\ndnsmasq · nftables"]
             MALCOLM["Malcolm Docker Stack\nZeek · Suricata · Arkime · OpenSearch"]
         end
         GW -->|enp3s0| R4G["4G Router"]
@@ -95,7 +95,6 @@ The Linux gateway runs two layers of tooling:
 
 - **nftables** — NAT + per-connection logging (monitor-only, policy accept)
 - **dnsmasq** — DHCP server + DNS query logging
-- **mitmproxy** — transparent HTTPS interception (TLS plaintext visible on rooted devices)
 
 **Analysis backend ([Malcolm](https://github.com/cisagov/Malcolm) — Docker Compose, CISA/INL):**
 
@@ -131,7 +130,7 @@ Malcolm replaces manually wiring Zeek → Logstash → Elasticsearch → Kibana.
 - Two NICs: `enp2s0` (DUT-facing, 10.99.1.1/24) and `enp3s0` (WAN)
 - **16 GB RAM minimum, 32 GB recommended** (Malcolm Docker stack)
 - **250 GB+ SSD** for PCAP and log storage
-- Host OS packages: `nftables`, `dnsmasq`, `mitmproxy`, `docker`
+- Host OS packages: `nftables`, `dnsmasq`, `docker`
 - Malcolm handles Zeek, Suricata, Arkime, and OpenSearch via Docker Compose
 
 ### Analyst Workstation
