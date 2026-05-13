@@ -117,67 +117,24 @@ diff ports_LASTWEEK.txt ports_$(date +%Y%m%d).txt
 
 ---
 
-## Quick Reference: Payload Inspection
+## Quick Reference: Locating a Session in Malcolm
 
-### Capturing a Specific Connection for Analysis
-
-**Primary — Arkime (Malcolm):**
+When a check above triggers, find the full session record in Arkime:
 
 ```text
 # Open http://localhost:8005 (Arkime Sessions)
 # Filter by source IP:  ip.src == <device_ip>
 # Filter by dest IP:    ip.dst == <suspicious_ip>
-# Right-click session → View Packets (full PCAP reassembly)
-# Right-click session → Download PCAP (export for offline analysis)
+# Right-click session → Download PCAP (preserve as evidence)
+# Note: session metadata (bytes, duration, dest ASN/country) is sufficient
+#       for most findings — full PCAP is stored automatically by Malcolm
 ```
 
-**Supplemental — Wireshark (on exported PCAP):**
-
-```bash
-# Filter to device IP
-ip.addr == <device_ip>
-
-# Filter to specific destination
-ip.addr == <device_ip> && ip.dst == <suspicious_ip>
-
-# Export objects: File → Export Objects → HTTP
-```
-
-### Decoding Common Obfuscation in Traffic
-
-```bash
-# Base64 decode a suspicious string
-echo "c3VzcGljaW91cw==" | base64 -d
-
-# Check if payload is gzip compressed
-echo "<hex_payload>" | xxd -r -p | file -
-
-# XOR decode (if key is known from APK analysis)
-python3 -c "
-data = bytes.fromhex('<hex_payload>')
-key = 0x42  # example
-print(bytes([b ^ key for b in data]))
-"
-```
-
-### Checking If Data Contains Device Identifiers
-
-Search captured traffic for:
-
-```text
-<serial_number>
-<MAC_address_no_colons>
-<MAC_address_with_colons>
-<IMEI>
-<Android_ID>  # get with: adb shell settings get secure android_id
-```
-
-In pcap:
-
-```bash
-# Search PCAP for device serial
-tshark -r capture.pcap -Y 'frame contains "<SERIAL>"'
-```
+Note the following from the session record and add to the findings log:
+- Timestamp, destination IP, destination port, protocol
+- Bytes sent (`orig_bytes`) — volume is evidence even without content inspection
+- Zeek `conn_state` — was the connection completed or rejected?
+- GeoIP country and ASN (Malcolm Connections by Country dashboard)
 
 ---
 
