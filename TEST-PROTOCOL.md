@@ -340,6 +340,20 @@ whois <IP> | grep -i "orgname\|country\|netname"
 # Flag: TXT record queries (common C2 channel)
 ```
 
+> **⚠️ TODO — closer study needed: DoH/DoT evasion detection**
+>
+> Zeek `dns.log` captures plain UDP/TCP port 53 only. DNS over HTTPS (DoH, port 443) and
+> DNS over TLS (DoT, port 853) encrypt query content — domain names are invisible without TLS decryption.
+> DoH tunneling is actively used in real C2 and exfiltration malware.
+>
+> Detection without TLS decryption — viable in Malcolm, needs to be operationalised:
+> - Zeek `ssl.log`: flag TLS SNI matching `dns.google`, `cloudflare-dns.com`, `dns.alidns.com`, `doh.pub`
+> - Zeek `conn.log`: flag any connection to port 853 (DoT) or high-frequency HTTPS to known DoH resolver IPs
+> - JA4+ dashboard: non-browser TLS fingerprint making repeated HTTPS to resolver IP is a tunneling signal
+> - OpenSearch anomaly detection: beaconing pattern (equal-interval small bursts) to DoH resolver IPs
+> - Custom Suricata TLS SNI rules for known DoH providers (add to `local.rules`)
+> - Note: URI-based detection (`/dns-query`) requires TLS decryption — not available in current setup
+
 #### TLS/HTTPS
 
 ```text

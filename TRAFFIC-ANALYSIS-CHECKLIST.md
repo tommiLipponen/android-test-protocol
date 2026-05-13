@@ -31,6 +31,16 @@
 - [ ] New domains not seen before?
   - Yes: ⚪ Log and review weekly
 
+> **⚠️ TODO — closer study needed:** Plain UDP/TCP DNS (port 53) is fully visible in Zeek `dns.log`.
+> DoH (port 443) and DoT (port 853) encrypt query content — domain names are not captured.
+> Viable detection without TLS decryption (to be developed into checks):
+> - Any connection to port 853 → DoT bypass attempt 🟠
+> - High-frequency HTTPS to known DoH resolver IPs (`8.8.8.8`, `1.1.1.1`, `223.5.5.5`, `119.29.29.29`) 🟠
+> - TLS SNI matching `dns.google`, `cloudflare-dns.com`, `dns.alidns.com` in Zeek `ssl.log` 🟠
+> - JA4+ fingerprint anomaly — non-browser client making HTTPS to resolver IP (Malcolm JA4+ dashboard)
+> - Suricata custom TLS SNI rules for known DoH providers (to be added to `local.rules`)
+> - Beaconing pattern: equally-spaced small HTTPS bursts to resolver IP (OpenSearch anomaly detection)
+
 ### IP / Connection Layer
 
 - [ ] Any connection to Chinese ASNs (see main protocol Appendix B)?
