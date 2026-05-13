@@ -267,7 +267,7 @@ ls etc/security/cacerts/
 ## 5. Phase 2 — Isolated Network Baseline (Days 1–14)
 
 **Duration:** 14 days minimum  
-**Network:** Test VLAN with full egress logging, DNS sinkhole active, transparent proxy active  
+**Network:** Test VLAN with full egress logging — nftables + dnsmasq + Malcolm active  
 **Device State:** Out of box, no CMS software installed, device powered on and left running
 
 ### 5.1 Initial Connection
